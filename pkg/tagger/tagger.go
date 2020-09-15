@@ -320,6 +320,18 @@ func (t *Tagger) List(cardinality collectors.TagCardinality) response.TaggerList
 	return r
 }
 
+// Subscribe returns a list of existing entities in the store, alongside a
+// channel that receives events whenever an entity is added, modified or
+// deleted.
+func (t *Tagger) Subscribe(cardinality collectors.TagCardinality) chan []EntityEvent {
+	return t.tagStore.subscribe(cardinality)
+}
+
+// Unsubscribe ends a subscription to entity events and closes its channel.
+func (t *Tagger) Unsubscribe(ch chan []EntityEvent) {
+	t.tagStore.unsubscribe(ch)
+}
+
 // copyArray makes sure the tagger does not return internal slices
 // that could be modified by others, by explicitly copying the slice
 // contents to a new slice. As strings are references, the size of

@@ -7,6 +7,7 @@ package tagger
 
 import (
 	"math/rand"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -322,5 +323,99 @@ func TestDigest(t *testing.T) {
 		beforeShuffle := computeTagsHash(tags)
 		shuffleTags(tags)
 		assert.Equal(t, beforeShuffle, computeTagsHash(tags))
+	}
+}
+
+type entityEventExpectation struct {
+	eventType    EventType
+	id           string
+	lowCardTags  []string
+	highCardTags []string
+}
+
+func TestSubscribe(t *testing.T) {
+	store := newTagStore()
+
+	var expectedEvents = []entityEventExpectation{
+		{EventTypeAdded, "test1", []string{"low"}, []string{"high"}},
+		{EventTypeModified, "test1", []string{"low"}, []string{"high:1", "high:2"}},
+		{EventTypeAdded, "test2", []string{"low"}, []string{"high"}},
+	}
+
+	store.processTagInfo(&collectors.TagInfo{
+		Source:       "source",
+		Entity:       "test1",
+		LowCardTags:  []string{"low"},
+		HighCardTags: []string{"high"},
+	})
+
+	highCardEvents := []EntityEvent{}
+	lowCardEvents := []EntityEvent{}
+
+	highCardCh := store.subscribe(collectors.HighCardinality)
+	lowCardCh := store.subscribe(collectors.LowCardinality)
+
+	store.processTagInfo(&collectors.TagInfo{
+		Source:       "source",
+		Entity:       "test1",
+		LowCardTags:  []string{"low"},
+		HighCardTags: []string{"high:1", "high:2"},
+	})
+
+	store.processTagInfo(&collectors.TagInfo{
+		Source:       "source",
+		Entity:       "test2",
+		LowCardTags:  []string{"low"},
+		HighCardTags: []string{"high"},
+	})
+
+	store.processTagInfo(&collectors.TagInfo{
+		Source:       "source",
+		Entity:       "test1",
+		DeleteEntity: true,
+	})
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go collectEvents(&wg, &highCardEvents, highCardCh)
+	go collectEvents(&wg, &lowCardEvents, lowCardCh)
+
+	store.unsubscribe(highCardCh)
+	store.unsubscribe(lowCardCh)
+
+	wg.Wait()
+
+	checkEvents(t, expectedEvents, highCardEvents, true)
+	checkEvents(t, expectedEvents, lowCardEvents, false)
+}
+
+func collectEvents(wg *sync.WaitGroup, events *[]EntityEvent, ch chan []EntityEvent) {
+	for chEvents := range ch {
+		for _, event := range chEvents {
+			*events = append(*events, event)
+		}
+	}
+
+	wg.Done()
+}
+
+func checkEvents(t *testing.T, expectations []entityEventExpectation, events []EntityEvent, highCardinality bool) {
+	passed := assert.Len(t, events, len(expectations))
+	if !passed {
+		return
+	}
+
+	for i, expectation := range expectations {
+		event := events[i]
+
+		tags := expectation.lowCardTags
+		if highCardinality {
+			tags = append(tags, expectation.highCardTags...)
+		}
+
+		assert.Equal(t, expectation.eventType, event.EventType)
+		assert.Equal(t, expectation.id, event.Entity.ID)
+		assert.Equal(t, tags, event.Entity.Tags)
 	}
 }

@@ -15,12 +15,18 @@ service Agent {
 }
 
 service AgentSecure {
-    rpc GetTags (TagRequest) returns (TagReply) {
+    rpc StreamTags(StreamTagsRequest) returns (stream StreamTagsResponse) {
         option (google.api.http) = {
-            post: "/v1/grpc/tags"
+            post: "/v1/grpc/stream_tags"
             body: "*"
         };
-    }
+    };
+    rpc FetchEntity(FetchEntityRequest) returns (Entity) {
+        option (google.api.http) = {
+            post: "/v1/grpc/fetch_entity"
+            body: "*"
+        };
+    };
 }
 
 message HostnameRequest {}
@@ -30,12 +36,46 @@ message HostnameReply {
     string hostname = 1;
 }
 
-// The request message containing the tag list for an entity.
-message TagRequest {
-    string entity = 1;
+message StreamTagsRequest {
+    TagCardinality cardinality = 1;
+    Filter includeFilter = 2;
+    Filter excludeFilter = 3;
 }
 
-// The response message containing the tagger reply
-message TagReply {
-    repeated string tags = 1;
+message StreamTagsResponse {
+    EventType type = 1;
+    Entity entity = 2;
+}
+
+enum EventType {
+    ADDED = 0;
+    MODIFIED = 1;
+    DELETED = 2;
+}
+
+enum TagCardinality {
+    LOW = 0;
+    ORCHESTRATOR = 1;
+    HIGH = 2;
+}
+
+message Filter {
+    string kubeNamespace = 1;
+    string image = 2;
+    string containerName = 3;
+}
+
+message Entity {
+    EntityId id = 1;
+    repeated string tags = 2;
+}
+
+message FetchEntityRequest {
+    EntityId id = 1;
+    TagCardinality cardinality = 2;
+}
+
+message EntityId {
+    string prefix = 1;
+    string uid = 2;
 }

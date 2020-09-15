@@ -8,9 +8,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/DataDog/datadog-agent/pkg/util/log"
-
 	"github.com/DataDog/datadog-agent/pkg/tagger/collectors"
+	"github.com/DataDog/datadog-agent/pkg/util/log"
 )
 
 // entityTags holds the tag information for a given entity
@@ -31,16 +30,21 @@ type entityTags struct {
 // tagStore stores entity tags in memory and handles search and collation.
 // Queries should go through the Tagger for cache-miss handling
 type tagStore struct {
-	storeMutex    sync.RWMutex
-	store         map[string]*entityTags
+	storeMutex sync.RWMutex
+	store      map[string]*entityTags
+
 	toDeleteMutex sync.RWMutex
 	toDelete      map[string]struct{} // set emulation
+
+	subscribersMutex sync.RWMutex
+	subscribers      map[chan []EntityEvent]collectors.TagCardinality
 }
 
 func newTagStore() *tagStore {
 	return &tagStore{
-		store:    make(map[string]*entityTags),
-		toDelete: make(map[string]struct{}),
+		store:       make(map[string]*entityTags),
+		toDelete:    make(map[string]struct{}),
+		subscribers: make(map[chan []EntityEvent]collectors.TagCardinality),
 	}
 }
 
@@ -61,6 +65,8 @@ func (s *tagStore) processTagInfo(info *collectors.TagInfo) error {
 		return nil
 	}
 
+	eventType := EventTypeModified
+
 	// TODO: check if real change
 	s.storeMutex.Lock()
 	defer s.storeMutex.Unlock()
@@ -74,11 +80,26 @@ func (s *tagStore) processTagInfo(info *collectors.TagInfo) error {
 		}
 		s.store[info.Entity] = storedTags
 
+		eventType = EventTypeAdded
+
 		storedEntities.Inc()
 	}
 
 	updatedEntities.Inc()
 
+	err := updateStoredTags(storedTags, info)
+	if err != nil {
+		return err
+	}
+
+	s.notifySubscribers(eventType, map[string]*entityTags{
+		info.Entity: storedTags,
+	})
+
+	return nil
+}
+
+func updateStoredTags(storedTags *entityTags, info *collectors.TagInfo) error {
 	storedTags.Lock()
 	defer storedTags.Unlock()
 	_, found := storedTags.lowCardTags[info.Source]
@@ -96,6 +117,110 @@ func (s *tagStore) processTagInfo(info *collectors.TagInfo) error {
 	storedTags.cacheValid = false
 
 	return nil
+}
+
+// Entity is an entity ID + tags.
+type Entity struct {
+	ID   string
+	Tags []string
+}
+
+// EventType is a type of event, triggered when an entity is added, modified or
+// deleted.
+type EventType int
+
+const (
+	// EventTypeAdded means an entity was added.
+	EventTypeAdded EventType = iota
+	// EventTypeModified means an entity was modified.
+	EventTypeModified
+	// EventTypeDeleted means an entity was deleted.
+	EventTypeDeleted
+)
+
+// EntityEvent is an event generated when an entity is added, modified or
+// deleted. It contains the event type and the new entity.
+type EntityEvent struct {
+	EventType EventType
+	Entity    Entity
+}
+
+// subscribe returns a channel that receives a slice of events whenever an entity is
+// added, modified or deleted.
+func (s *tagStore) subscribe(cardinality collectors.TagCardinality) chan []EntityEvent {
+	// this buffer size is an educated guess, as we know the rate of
+	// updates, but not how fast these can be streamed out yet. it most
+	// likely should be configurable.
+	bufferSize := 100
+
+	// this is a `ch []EntityEvent` instead of a `ch EntityEvent` to
+	// improve throughput, as bursts of events are as likely to occur as
+	// isolated events, especially at startup or with the kubelet
+	// collector, since it's a collector that periodically pulls changes.
+	ch := make(chan []EntityEvent, bufferSize)
+
+	s.storeMutex.RLock()
+	defer s.storeMutex.RUnlock()
+	events := make([]EntityEvent, 0, len(s.store))
+	for entityID, et := range s.store {
+		tags, _, _ := et.get(cardinality)
+
+		events = append(events, EntityEvent{
+			EventType: EventTypeAdded,
+			Entity: Entity{
+				ID:   entityID,
+				Tags: copyArray(tags),
+			},
+		})
+	}
+
+	s.subscribersMutex.Lock()
+	defer s.subscribersMutex.Unlock()
+	s.subscribers[ch] = cardinality
+
+	ch <- events
+
+	return ch
+}
+
+// unsubscribe ends a subscription to entity events and closes its channel.
+func (s *tagStore) unsubscribe(ch chan []EntityEvent) {
+	s.subscribersMutex.Lock()
+	defer s.subscribersMutex.Unlock()
+
+	delete(s.subscribers, ch)
+	close(ch)
+}
+
+// notifySubscribers sends a slice of EntityEvents of a certain type for the
+// passed entities all registered subscribers.
+func (s *tagStore) notifySubscribers(eventType EventType, entities map[string]*entityTags) {
+	s.subscribersMutex.RLock()
+	defer s.subscribersMutex.RUnlock()
+
+	// NOTE: we need to add some telemetry on the amount of subscribers and
+	// notifications being sent, and at which cardinality
+
+	for ch, cardinality := range s.subscribers {
+		events := make([]EntityEvent, 0, len(entities))
+
+		for id, storedTags := range entities {
+			var tags []string
+			if storedTags != nil {
+				tags, _, _ = storedTags.get(cardinality)
+			}
+
+			events = append(events, EntityEvent{
+				EventType: eventType,
+				Entity: Entity{
+					ID:   id,
+					Tags: tags,
+				},
+			})
+		}
+
+		ch <- events
+	}
 }
 
 func computeTagsHash(tags []string) string {
@@ -123,10 +248,12 @@ func (s *tagStore) prune() error {
 		return nil
 	}
 
+	deletedEntities := map[string]*entityTags{}
+
 	s.storeMutex.Lock()
-	defer s.storeMutex.Unlock()
 	for entity := range s.toDelete {
 		delete(s.store, entity)
+		deletedEntities[entity] = nil
 	}
 
 	remainingEntities := len(s.store)
@@ -135,6 +262,9 @@ func (s *tagStore) prune() error {
 	// Start fresh
 	s.toDelete = make(map[string]struct{})
 
+	s.storeMutex.Unlock()
+
+	s.notifySubscribers(EventTypeDeleted, deletedEntities)
 	storedEntities.Set(float64(remainingEntities))
 
 	return nil
