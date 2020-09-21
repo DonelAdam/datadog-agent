@@ -45,6 +45,11 @@ if node['platform_family'] != 'windows'
     command ['mount', '-t', 'debugfs', 'none', '/sys/kernel/debug']
   end
 
+  docker_exec 'create_loop' do
+    container 'docker-testsuite'
+    command ['bash', '-c', 'mknod /dev/loop0 b 7 0 || true']
+  end
+
   package 'Install i386 libc' do
     case node[:platform]
     when 'redhat', 'centos', 'suse', 'fedora'
@@ -56,5 +61,11 @@ if node['platform_family'] != 'windows'
 
   kernel_module 'loop' do
     action :load
+  end
+
+  if platform_family?('centos', 'fedora', 'rhel')
+    selinux_state "SELinux Permissive" do
+      action :permissive
+    end
   end
 end

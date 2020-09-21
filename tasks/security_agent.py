@@ -1,5 +1,6 @@
 import datetime
 import os
+import shutil
 import time
 
 from invoke import task
@@ -180,7 +181,39 @@ def functional_tests(
 
 
 @task
-def docker_functional_tests(ctx, race=False, verbose=False, go_version=None, arch="x64", major_version='7', pattern=''):
+def kitchen_functional_tests(ctx,race=False, verbose=False, go_version=None, major_version='7', pattern=''):
+    functional_tests(
+        ctx,
+        race=race,
+        verbose=verbose,
+        go_version=go_version,
+        arch="x64",
+        major_version=major_version,
+        output="test/kitchen/site-cookbooks/dd-security-agent-check/files/testsuite",
+        build_tags="ebpf_bindata",
+    )
+
+    functional_tests(
+        ctx,
+        race=race,
+        verbose=verbose,
+        go_version=go_version,
+        major_version=major_version,
+        output="test/kitchen/site-cookbooks/dd-security-agent-check/files/testsuite32",
+        build_tags="ebpf_bindata",
+        arch="x86",
+    )
+
+    kitchen_dir = os.path.join("test", "kitchen")
+    shutil.copy(os.path.join(kitchen_dir, "kitchen-vagrant-security-agent.yml"),
+                os.path.join(kitchen_dir, "kitchen.yml"))
+
+    with ctx.cd(kitchen_dir):
+        ctx.run("kitchen test")
+
+
+@task
+def docker_functional_tests(ctx,race=False, verbose=False, go_version=None, arch="x64", major_version='7', pattern=''):
     functional_tests(
         ctx,
         race=race,
