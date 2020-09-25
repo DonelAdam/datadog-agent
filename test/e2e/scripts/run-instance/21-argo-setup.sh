@@ -7,7 +7,7 @@ cd "$(dirname $0)"
 
 for i in {0..60}
 do
-    kubectl get hpa,svc,ep,ds,deploy,job,po --all-namespaces -o wide && break
+    /opt/bin/kubectl get hpa,svc,ep,ds,deploy,job,po --all-namespaces -o wide && break
     sleep 5
 done
 
@@ -16,7 +16,7 @@ set -e
 ./argo install --image-pull-policy IfNotPresent
 
 # TODO use a more restrictive SA
-kubectl apply -f - << EOF
+/opt/bin/kubectl apply -f - << EOF
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
@@ -36,6 +36,6 @@ set +e
 for i in {0..60}
 do
     ./argo list && break
-    kubectl get hpa,svc,ep,ds,deploy,job,po --all-namespaces -o wide
+    /opt/bin/kubectl get hpa,svc,ep,ds,deploy,job,po --all-namespaces -o wide
     sleep 5
 done
