@@ -1,6 +1,7 @@
 import datetime
 import os
 import shutil
+import stat
 import time
 
 from invoke import task
@@ -136,7 +137,6 @@ def functional_tests(
     pattern='',
     output='',
     build_tags='',
-    one_by_one=False,
     bundle_ebpf=True,
 ):
     ldflags, gcflags, env = get_build_flags(ctx, arch=arch, major_version=major_version)
@@ -165,23 +165,11 @@ def functional_tests(
         "repo_path": REPO_PATH,
     }
 
-    if one_by_one:
-        all_tests = ctx.run(
-            "grep -e 'func Test' pkg/security/tests/*.go | perl -pe 's|.*func (.*?)\\(.*|\\1|g'"
-        ).stdout.split()
-
-        for i, test in enumerate(all_tests):
-            args["run_opt"] = "-run ^{test}$".format(test=test)
-            ctx.run(cmd.format(**args), env=env)
-            if i != len(all_tests) - 1:
-                time.sleep(2)
-
-    else:
-        ctx.run(cmd.format(**args), env=env)
+    ctx.run(cmd.format(**args), env=env)
 
 
 @task
-def kitchen_functional_tests(ctx,race=False, verbose=False, go_version=None, major_version='7', pattern=''):
+def build_kitchen_functional_tests(ctx, race=False, verbose=False, go_version=None, major_version='7', pattern=''):
     functional_tests(
         ctx,
         race=race,
@@ -204,16 +192,32 @@ def kitchen_functional_tests(ctx,race=False, verbose=False, go_version=None, maj
         arch="x86",
     )
 
+
+@task
+def kitchen_functional_tests(
+    ctx, race=False, verbose=False, go_version=None, major_version='7', pattern='', build_tests=False
+):
+    if build_tests:
+        build_kitchen_functional_tests(
+            ctx,
+            race=race,
+            verbose=verbose,
+            go_version=go_version,
+            major_version=major_version,
+            pattern=pattern,
+        )
+
     kitchen_dir = os.path.join("test", "kitchen")
-    shutil.copy(os.path.join(kitchen_dir, "kitchen-vagrant-security-agent.yml"),
-                os.path.join(kitchen_dir, "kitchen.yml"))
+    shutil.copy(
+        os.path.join(kitchen_dir, "kitchen-vagrant-security-agent.yml"), os.path.join(kitchen_dir, "kitchen.yml")
+    )
 
     with ctx.cd(kitchen_dir):
         ctx.run("kitchen test")
 
 
 @task
-def docker_functional_tests(ctx,race=False, verbose=False, go_version=None, arch="x64", major_version='7', pattern=''):
+def docker_functional_tests(ctx, race=False, verbose=False, go_version=None, arch="x64", major_version='7', pattern=''):
     functional_tests(
         ctx,
         race=race,
