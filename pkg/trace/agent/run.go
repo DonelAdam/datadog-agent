@@ -38,6 +38,9 @@ func Run(ctx context.Context) {
 		return
 	}
 
+	if runtime.GOMAXPROCS(0) > 2 {
+		runtime.GOMAXPROCS(2)
+	}
 	cfg, err := config.Load(flags.ConfigPath)
 	if err != nil {
 		if err == config.ErrMissingAPIKey {
